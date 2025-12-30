@@ -1,27 +1,25 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { Prisma } from "@prisma/client";
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { verifySession } from "@/lib/auth"; // Importante para segurança
+import { Prisma } from "@prisma/client";
+
+// --- TRANSAÇÕES ---
 
 export async function createTransaction(formData: FormData) {
+  const user = await verifySession(); // Pega o usuário logado
+  if (!user) throw new Error("Usuário não logado");
+
   const description = formData.get("description") as string;
   const amount = parseFloat(formData.get("amount") as string);
   const type = formData.get("type") as "INCOME" | "EXPENSE";
   const category = formData.get("category") as string;
+  const date = new Date(formData.get("date") as string);
+  const accountId = formData.get("accountId") as string; // Pode ser vazio se for cartão
 
-  const account = await prisma.account.findFirst({ orderBy: { id: 'desc' } });
-
-  if (!account) throw new Error("Conta não encontrada");
-
-  // CONVERSÃO SEGURA: Number() garante que não é um objeto Decimal
-  const currentBalance = Number(account.balance);
-
-  const newBalance = type === "EXPENSE" 
-    ? currentBalance - amount 
-    : currentBalance + amount;
-
+  // Lógica simples de transação
   await prisma.$transaction(async (tx) => {
     await tx.transaction.create({
       data: {
@@ -29,66 +27,30 @@ export async function createTransaction(formData: FormData) {
         amount,
         type,
         category,
-        date: new Date(),
-        accountId: account.id,
+        date,
+        accountId: accountId || null, // Garante nulo se vazio
+        userId: user, // Vincula ao usuário logado
       }
     });
 
-    await tx.account.update({
-      where: { id: account.id },
-      data: { balance: newBalance }
-    });
+    // Se tiver conta vinculada, atualiza saldo
+    if (accountId) {
+      const currentAccount = await tx.account.findUnique({ where: { id: accountId } });
+      if (currentAccount) {
+        let newBalance = Number(currentAccount.balance);
+        if (type === "INCOME") newBalance += amount;
+        else newBalance -= amount;
+
+        await tx.account.update({
+          where: { id: accountId },
+          data: { balance: newBalance }
+        });
+      }
+    }
   });
 
   revalidatePath("/dashboard");
   redirect("/dashboard");
-}
-
-export async function deleteTransaction(formData: FormData) {
-  const transactionId = formData.get("id") as string;
-
-  if (!transactionId) {
-    throw new Error("ID da transação não informado");
-  }
-
-  const transaction = await prisma.transaction.findUnique({
-    where: { id: transactionId },
-    include: { account: true },
-  });
-
-  if (!transaction) {
-    throw new Error("Transação não encontrada");
-  }
-
-  // Lógica de saldo (Só aplicável se tiver conta vinculada)
-  let newBalance = 0;
-  if (transaction.account) {
-    const currentBalance = Number(transaction.account.balance);
-    const transactionAmount = Number(transaction.amount);
-
-    newBalance =
-      transaction.type === "EXPENSE"
-        ? currentBalance + transactionAmount
-        : currentBalance - transactionAmount;
-  }
-
-  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    // 1. Atualiza o saldo da conta (SÓ SE TIVER CONTA VINCULADA)
-    // A CORREÇÃO ESTÁ NESTE IF ABAIXO:
-    if (transaction.accountId) { 
-      await tx.account.update({
-        where: { id: transaction.accountId },
-        data: { balance: newBalance },
-      });
-    }
-
-    // 2. Remove a transação
-    await tx.transaction.delete({
-      where: { id: transactionId },
-    });
-  });
-
-  revalidatePath("/dashboard");
 }
 
 export async function updateTransaction(formData: FormData) {
@@ -119,7 +81,7 @@ export async function updateTransaction(formData: FormData) {
         const oldAmount = Number(oldTransaction.amount);
         const currentAccountBalance = Number(oldTransaction.account.balance);
 
-        // Reverte
+        // Reverte saldo antigo
         let balanceAfterRevert = currentAccountBalance;
         if (oldTransaction.type === "EXPENSE") {
             balanceAfterRevert += oldAmount;
@@ -127,7 +89,7 @@ export async function updateTransaction(formData: FormData) {
             balanceAfterRevert -= oldAmount;
         }
 
-        // Aplica novo
+        // Aplica novo saldo
         let finalBalance = balanceAfterRevert;
         if (type === "EXPENSE") {
             finalBalance -= amount;
@@ -144,4 +106,116 @@ export async function updateTransaction(formData: FormData) {
 
   revalidatePath("/dashboard");
   redirect("/dashboard");
+}
+
+export async function deleteTransaction(formData: FormData) {
+  const transactionId = formData.get("id") as string;
+
+  if (!transactionId) {
+    throw new Error("ID da transação não informado");
+  }
+
+  const transaction = await prisma.transaction.findUnique({
+    where: { id: transactionId },
+    include: { account: true },
+  });
+
+  if (!transaction) {
+    throw new Error("Transação não encontrada");
+  }
+
+  let newBalance = 0;
+  // Calcula saldo apenas se tiver conta
+  if (transaction.account) {
+    const currentBalance = Number(transaction.account.balance);
+    const transactionAmount = Number(transaction.amount);
+
+    newBalance =
+      transaction.type === "EXPENSE"
+        ? currentBalance + transactionAmount
+        : currentBalance - transactionAmount;
+  }
+
+  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    // 1. Atualiza o saldo da conta (SÓ SE TIVER CONTA VINCULADA)
+    if (transaction.accountId) { 
+      await tx.account.update({
+        where: { id: transaction.accountId },
+        data: { balance: newBalance },
+      });
+    }
+
+    // 2. Remove a transação
+    await tx.transaction.delete({
+      where: { id: transactionId },
+    });
+  });
+
+  revalidatePath("/dashboard");
+}
+
+// --- FUNÇÕES DE CARTÕES (Restauradas) ---
+
+export async function createCreditCard(formData: FormData) {
+  const userId = await verifySession(); // Segurança: pega o ID do cookie
+  if (!userId) throw new Error("Usuário não logado");
+
+  const name = formData.get("name") as string;
+  const limit = parseFloat(formData.get("limit") as string);
+  const closingDay = parseInt(formData.get("closingDay") as string);
+  const dueDay = parseInt(formData.get("dueDay") as string);
+
+  await prisma.creditCard.create({
+    data: {
+      name,
+      limit,
+      closingDay,
+      dueDay,
+      userId: userId // Usa o ID real
+    }
+  });
+
+  revalidatePath("/dashboard/cards");
+  revalidatePath("/dashboard");
+}
+
+// --- FUNÇÕES DE METAS (Restauradas) ---
+
+export async function createGoal(formData: FormData) {
+  const userId = await verifySession(); // Segurança
+  if (!userId) throw new Error("Usuário não logado");
+
+  const name = formData.get("name") as string;
+  const targetAmount = parseFloat(formData.get("targetAmount") as string);
+  const currentAmount = parseFloat(formData.get("currentAmount") as string) || 0;
+  const deadlineString = formData.get("deadline") as string;
+  
+  const deadline = deadlineString ? new Date(deadlineString) : null;
+
+  await prisma.goal.create({
+    data: {
+      name,
+      targetAmount,
+      currentAmount,
+      deadline,
+      userId: userId
+    }
+  });
+
+  revalidatePath("/dashboard/goals");
+}
+
+export async function addMoneyToGoal(formData: FormData) {
+  const goalId = formData.get("goalId") as string;
+  const amountToAdd = parseFloat(formData.get("amount") as string);
+
+  const goal = await prisma.goal.findUnique({ where: { id: goalId } });
+  if (!goal) return;
+
+  await prisma.goal.update({
+    where: { id: goalId },
+    data: { currentAmount: Number(goal.currentAmount) + amountToAdd }
+  });
+
+  revalidatePath("/dashboard/goals");
 }
