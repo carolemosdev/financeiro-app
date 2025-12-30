@@ -7,7 +7,7 @@ import Link from "next/link";
 import { getStockPrice } from "@/services/investment-api";
 import { formatCurrency } from "@/utils/formatters";
 import { deleteTransaction } from "./actions";
-import MonthSelector from "@/components/dashboard/MonthSelector"; // Ajustei para @/ para garantir
+import MonthSelector from "@/components/dashboard/MonthSelector";
 
 // Mapa de Ícones
 const CATEGORY_ICONS: Record<string, string> = {
@@ -23,7 +23,6 @@ const CATEGORY_ICONS: Record<string, string> = {
   "Ajuste": "🔧"
 };
 
-// Recebendo os parametros de busca (URL)
 export default async function DashboardPage({
   searchParams,
 }: {
@@ -38,11 +37,9 @@ export default async function DashboardPage({
 
   // 2. LÓGICA DE DATA (FILTRO)
   const now = new Date();
-  // Se tiver na URL usa, senão usa o atual
   const month = searchParams.month ? Number(searchParams.month) : now.getMonth();
   const year = searchParams.year ? Number(searchParams.year) : now.getFullYear();
 
-  // Define inicio e fim do mês para o banco de dados
   const startDate = new Date(year, month, 1);
   const endDate = new Date(year, month + 1, 0, 23, 59, 59);
 
@@ -52,10 +49,7 @@ export default async function DashboardPage({
     include: { 
       transactions: { 
         where: {
-          date: {
-            gte: startDate, // Maior ou igual dia 1
-            lte: endDate    // Menor ou igual ultimo dia
-          }
+          date: { gte: startDate, lte: endDate }
         },
         orderBy: { date: 'desc' } 
       } 
@@ -67,7 +61,7 @@ export default async function DashboardPage({
     include: { orders: true }
   });
 
-  // 4. Cálculos de Totais (Baseado apenas no mês filtrado)
+  // 4. Cálculos de Totais
   const transactions = account?.transactions || [];
   
   const totalIncome = transactions
@@ -78,25 +72,36 @@ export default async function DashboardPage({
     .filter(t => t.type === "EXPENSE")
     .reduce((acc, t) => acc + Number(t.amount), 0);
 
-  // 5. Preparando dados para o Gráfico Mensal
-  const monthlyDataMap = new Map();
+  // --- MUDANÇA AQUI ---
+  // 5. Preparando dados para o Gráfico (VISÃO DIÁRIA 1-31)
+  
+  // Descobre quantos dias tem o mês selecionado
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  
+  // Cria array inicial zerado [Dia 1, Dia 2, ... Dia 30]
+  const dailyChartData = Array.from({ length: daysInMonth }, (_, i) => ({
+    name: (i + 1).toString(), // Nome da barra: "1", "2"...
+    receitas: 0,
+    despesas: 0
+  }));
 
   transactions.forEach((t) => {
-    // Usamos o dia para agrupar no gráfico mensal se quiser detalhar, 
-    // ou mantemos o agrupamento atual. Como estamos filtrando um mês só,
-    // o gráfico atual mostraria apenas uma barra. 
-    // O ideal seria mostrar "Dia a dia" ou manter a visão geral.
-    // Mantive a lógica original para não quebrar, ele vai mostrar apenas o mês atual no gráfico.
-    const monthLabel = new Date(t.date).toLocaleString('pt-BR', { month: 'short' });
-    if (!monthlyDataMap.has(monthLabel)) {
-      monthlyDataMap.set(monthLabel, { name: monthLabel.toUpperCase(), receitas: 0, despesas: 0 });
+    // getUTCDate garante o dia correto independente do fuso horário do servidor
+    const day = new Date(t.date).getUTCDate();
+    
+    // Se o dia estiver dentro do array (segurança)
+    if (dailyChartData[day - 1]) {
+      if (t.type === "INCOME") {
+        dailyChartData[day - 1].receitas += Number(t.amount);
+      } else {
+        dailyChartData[day - 1].despesas += Number(t.amount);
+      }
     }
-    const current = monthlyDataMap.get(monthLabel);
-    if (t.type === "INCOME") current.receitas += Number(t.amount);
-    else current.despesas += Number(t.amount);
   });
 
-  const monthlyChartData = Array.from(monthlyDataMap.values()).reverse();
+  // Verifica se tem algum dado > 0 para decidir se mostra o gráfico
+  const hasDataForChart = dailyChartData.some(d => d.receitas > 0 || d.despesas > 0);
+  // --- FIM DA MUDANÇA ---
 
   // 6. Lógica de Investimentos
   let currentPrice = 0;
@@ -139,7 +144,6 @@ export default async function DashboardPage({
             </div>
           </div>
           
-          {/* Seletor de Mês e Botão de Transação */}
           <div className="flex flex-col md:flex-row gap-4 items-center">
             <MonthSelector />
             
@@ -154,7 +158,6 @@ export default async function DashboardPage({
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-blue-500">
             <p className="text-gray-500 text-sm font-semibold uppercase">Saldo Atual</p>
             <p className="text-3xl font-bold text-gray-800 mt-2">
-              {/* O saldo total da conta não muda com o filtro, é o acumulado histórico */}
               {account ? formatCurrency(Number(account.balance)) : formatCurrency(0)}
             </p>
           </div>
@@ -172,18 +175,19 @@ export default async function DashboardPage({
           </div>
         </div>
 
-        {/* --- BLOCO 2: GRÁFICOS --- */}
+        {/* --- BLOCO 2: GRÁFICOS (AJUSTADO PARA DIÁRIO) --- */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <div className="lg:col-span-2">
-             {monthlyChartData.length > 0 ? (
-                <MonthlyChart data={monthlyChartData} />
+             {hasDataForChart ? (
+                <MonthlyChart data={dailyChartData} />
              ) : (
                 <div className="h-[300px] w-full bg-white p-4 rounded-xl shadow-sm flex items-center justify-center text-gray-400">
-                    Sem movimentações neste mês.
+                    Nenhuma movimentação neste mês para o gráfico.
                 </div>
              )}
           </div>
           
+          {/* Coluna de Investimentos (Sem alterações) */}
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-full">
             <h2 className="text-gray-700 font-bold mb-4 border-b pb-2">Investimentos</h2>
             {asset ? (
