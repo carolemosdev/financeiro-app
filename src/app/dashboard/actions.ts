@@ -29,7 +29,6 @@ export async function createTransaction(formData: FormData) {
         category,
         date,
         accountId: accountId || null, // Garante nulo se vazio
-        userId: user, // Vincula ao usuário logado
       }
     });
 
