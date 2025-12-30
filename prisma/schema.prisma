@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql" // <--- MUDAR AQUI (estava "sqlite")
+  url      = env("DATABASE_URL")
+}
+
+// 1. USUÁRIO (Agora com Senha e Email único para Login)
+model User {
+  id        String   @id @default(uuid())
+  name      String?
+  email     String   @unique // Importante para login
+  password  String   // Senha do usuário
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accounts    Account[]
+  creditCards CreditCard[] // Novo: Relacionamento com cartões
+  goals       Goal[]       // Novo: Relacionamento com objetivos
+  assets      Asset[]
+}
+
+// 2. CONTA BANCÁRIA
+model Account {
+  id        String   @id @default(uuid())
+  name      String   // "Nubank", "Itaú"
+  balance   Decimal  // Saldo atual
+  type      String   // "CHECKING", "SAVINGS", "CASH"
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  
+  transactions Transaction[]
+}
+
+// 3. CARTÃO DE CRÉDITO (NOVO!)
+model CreditCard {
+  id          String   @id @default(uuid())
+  name        String   // "Nubank Roxinho", "Visa Infinite"
+  limit       Decimal  // Limite total
+  closingDay  Int      // Dia que fecha a fatura (ex: dia 5)
+  dueDay      Int      // Dia que vence a fatura (ex: dia 12)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+
+  transactions Transaction[]
+}
+
+// 4. TRANSAÇÃO (Atualizada para aceitar Conta OU Cartão)
+model Transaction {
+  id          String   @id @default(uuid())
+  description String
+  amount      Decimal
+  type        String   // "INCOME", "EXPENSE"
+  category    String   // "Alimentação", "Transporte"...
+  date        DateTime
+  createdAt   DateTime @default(now())
+
+  // Uma transação pode ser de uma Conta...
+  accountId     String?
+  account       Account? @relation(fields: [accountId], references: [id])
+
+  // ...OU de um Cartão de Crédito (opcional)
+  creditCardId  String?
+  creditCard    CreditCard? @relation(fields: [creditCardId], references: [id])
+}
+
+// 5. OBJETIVOS / METAS (NOVO!)
+model Goal {
+  id           String    @id @default(uuid())
+  name         String    // "Viagem Disney", "Carro Novo"
+  targetAmount Decimal   // Meta: R$ 50.000
+  currentAmount Decimal  @default(0) // Quanto já guardou: R$ 5.000
+  deadline     DateTime? // Data limite (opcional)
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+}
+
+// 6. INVESTIMENTOS (Mantido)
+model Asset {
+  id        String   @id @default(uuid())
+  ticker    String
+  type      String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  orders    Order[]
+}
+
+model Order {
+  id        String   @id @default(uuid())
+  quantity  Int
+  price     Decimal
+  type      String   // "BUY", "SELL"
+  date      DateTime
+  assetId   String
+  asset     Asset    @relation(fields: [assetId], references: [id])
+}
