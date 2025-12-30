@@ -44,7 +44,7 @@ export async function createTransaction(formData: FormData) {
   redirect("/dashboard");
 }
 
-eexport async function deleteTransaction(formData: FormData) {
+export async function deleteTransaction(formData: FormData) {
   const transactionId = formData.get("id") as string;
 
   if (!transactionId) {
