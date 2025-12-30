@@ -2,9 +2,19 @@ import { prisma } from "@/lib/prisma";
 import { createGoal, addMoneyToGoal } from "../actions";
 import Link from "next/link";
 import { formatCurrency } from "@/utils/formatters";
+import { verifySession } from "@/lib/auth"; // <--- NOVO
+import { redirect } from "next/navigation"; // <--- NOVO
 
 export default async function GoalsPage() {
-  const user = await prisma.user.findFirst({
+  const userId = await verifySession(); // <--- Segurança
+  
+  if (!userId) {
+    redirect("/login");
+  }
+
+  // Busca apenas metas do usuário
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
     include: { goals: { orderBy: { deadline: 'asc' } } }
   });
 
@@ -23,7 +33,7 @@ export default async function GoalsPage() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           
-          {/* --- COLUNA 1: CRIAR NOVA META --- */}
+          {/* --- COLUNA 1: NOVA META --- */}
           <div className="lg:col-span-1 bg-white p-6 rounded-xl shadow-md h-fit">
             <h2 className="text-xl font-bold text-gray-700 mb-4">Nova Meta</h2>
             <form action={createGoal} className="space-y-4">
@@ -89,7 +99,7 @@ export default async function GoalsPage() {
                         <span className="text-gray-400">de {formatCurrency(target)}</span>
                     </div>
 
-                    {/* Formulário rápido para adicionar dinheiro */}
+                    {/* Formulário Depósito */}
                     <form action={addMoneyToGoal} className="flex gap-2 bg-gray-50 p-2 rounded-lg">
                         <input type="hidden" name="goalId" value={goal.id} />
                         <input name="amount" type="number" placeholder="Valor a guardar..." className="flex-1 bg-transparent border-none outline-none text-sm px-2" required />

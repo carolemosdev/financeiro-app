@@ -2,10 +2,20 @@ import { prisma } from "@/lib/prisma";
 import { createCreditCard } from "../actions";
 import Link from "next/link";
 import { formatCurrency } from "@/utils/formatters";
+import { verifySession } from "@/lib/auth"; // <--- NOVO
+import { redirect } from "next/navigation"; // <--- NOVO
 
 export default async function CardsPage() {
-  const user = await prisma.user.findFirst({
-    include: { creditCards: true } // Busca os cartões do usuário
+  const userId = await verifySession(); // <--- Verificação de Segurança
+  
+  if (!userId) {
+    redirect("/login");
+  }
+
+  // Busca apenas cartões do usuário logado
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { creditCards: true }
   });
 
   const cards = user?.creditCards || [];
@@ -14,7 +24,7 @@ export default async function CardsPage() {
     <div className="min-h-screen bg-gray-100 p-8">
       <div className="max-w-5xl mx-auto">
         
-        {/* Cabeçalho com botão de Voltar */}
+        {/* Cabeçalho */}
         <div className="flex items-center gap-4 mb-8">
           <Link href="/dashboard" className="text-gray-500 hover:text-gray-800 transition">
             ← Voltar para o Painel
@@ -24,7 +34,7 @@ export default async function CardsPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           
-          {/* --- COLUNA 1: FORMULÁRIO DE CADASTRO --- */}
+          {/* --- COLUNA 1: FORMULÁRIO --- */}
           <div className="bg-white p-6 rounded-xl shadow-md h-fit">
             <h2 className="text-xl font-bold text-gray-700 mb-4">Adicionar Novo Cartão</h2>
             <form action={createCreditCard} className="space-y-4">
@@ -56,12 +66,11 @@ export default async function CardsPage() {
             </form>
           </div>
 
-          {/* --- COLUNA 2: LISTA DE CARTÕES --- */}
+          {/* --- COLUNA 2: LISTA --- */}
           <div className="space-y-4">
             {cards.length > 0 ? (
               cards.map((card) => (
                 <div key={card.id} className="bg-gradient-to-r from-gray-800 to-gray-900 p-6 rounded-xl shadow-lg text-white relative overflow-hidden group">
-                  {/* Efeito visual de cartão */}
                   <div className="absolute top-0 right-0 -mr-8 -mt-8 w-32 h-32 bg-white opacity-5 rounded-full blur-2xl"></div>
                   
                   <div className="flex justify-between items-start">
@@ -77,7 +86,6 @@ export default async function CardsPage() {
                       <p>Fecha dia: <span className="text-white font-bold">{card.closingDay}</span></p>
                       <p>Vence dia: <span className="text-white font-bold">{card.dueDay}</span></p>
                     </div>
-                    {/* Aqui futuramente mostraremos a fatura atual */}
                     <p className="text-xs text-purple-300 border border-purple-500/30 px-2 py-1 rounded">
                       Fatura Atual: R$ 0,00
                     </p>
