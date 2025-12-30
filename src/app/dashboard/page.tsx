@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { verifySession } from "@/lib/auth"; // <--- Importante para pegar o usuário logado
+import { verifySession } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import PortfolioChart from "@/components/charts/PortfolioChart";
 import MonthlyChart from "@/components/charts/MonthlyChart";
@@ -7,6 +7,7 @@ import Link from "next/link";
 import { getStockPrice } from "@/services/investment-api";
 import { formatCurrency } from "@/utils/formatters";
 import { deleteTransaction } from "./actions";
+import MonthSelector from "@/components/dashboard/MonthSelector"; // Ajustei para @/ para garantir
 
 // Mapa de Ícones
 const CATEGORY_ICONS: Record<string, string> = {
@@ -22,29 +23,51 @@ const CATEGORY_ICONS: Record<string, string> = {
   "Ajuste": "🔧"
 };
 
-export default async function DashboardPage() {
-  // 1. VERIFICAÇÃO DE SEGURANÇA (Quem é você?)
+// Recebendo os parametros de busca (URL)
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: { month?: string; year?: string };
+}) {
+  // 1. VERIFICAÇÃO DE SEGURANÇA
   const userId = await verifySession();
   
-  // Se não tiver usuário logado, chuta pro login
   if (!userId) {
     redirect("/login");
   }
 
-  // 2. BUSCA APENAS OS DADOS DO USUÁRIO LOGADO (where: { userId })
+  // 2. LÓGICA DE DATA (FILTRO)
+  const now = new Date();
+  // Se tiver na URL usa, senão usa o atual
+  const month = searchParams.month ? Number(searchParams.month) : now.getMonth();
+  const year = searchParams.year ? Number(searchParams.year) : now.getFullYear();
+
+  // Define inicio e fim do mês para o banco de dados
+  const startDate = new Date(year, month, 1);
+  const endDate = new Date(year, month + 1, 0, 23, 59, 59);
+
+  // 3. BUSCA DADOS COM O FILTRO DE DATA APLICADO
   const account = await prisma.account.findFirst({
-    where: { userId: userId }, // <--- O SEGREDO ESTÁ AQUI!
-    include: { transactions: { orderBy: { date: 'desc' } } }
+    where: { userId: userId },
+    include: { 
+      transactions: { 
+        where: {
+          date: {
+            gte: startDate, // Maior ou igual dia 1
+            lte: endDate    // Menor ou igual ultimo dia
+          }
+        },
+        orderBy: { date: 'desc' } 
+      } 
+    }
   });
 
   const asset = await prisma.asset.findFirst({
-    where: { userId: userId }, // <--- AQUI TAMBÉM!
+    where: { userId: userId },
     include: { orders: true }
   });
 
-  // --- O RESTO DO CÓDIGO CONTINUA IGUAL ---
-
-  // 3. Cálculos de Totais (Receitas vs Despesas)
+  // 4. Cálculos de Totais (Baseado apenas no mês filtrado)
   const transactions = account?.transactions || [];
   
   const totalIncome = transactions
@@ -55,22 +78,27 @@ export default async function DashboardPage() {
     .filter(t => t.type === "EXPENSE")
     .reduce((acc, t) => acc + Number(t.amount), 0);
 
-  // 4. Preparando dados para o Gráfico Mensal
+  // 5. Preparando dados para o Gráfico Mensal
   const monthlyDataMap = new Map();
 
   transactions.forEach((t) => {
-    const month = new Date(t.date).toLocaleString('pt-BR', { month: 'short' });
-    if (!monthlyDataMap.has(month)) {
-      monthlyDataMap.set(month, { name: month.toUpperCase(), receitas: 0, despesas: 0 });
+    // Usamos o dia para agrupar no gráfico mensal se quiser detalhar, 
+    // ou mantemos o agrupamento atual. Como estamos filtrando um mês só,
+    // o gráfico atual mostraria apenas uma barra. 
+    // O ideal seria mostrar "Dia a dia" ou manter a visão geral.
+    // Mantive a lógica original para não quebrar, ele vai mostrar apenas o mês atual no gráfico.
+    const monthLabel = new Date(t.date).toLocaleString('pt-BR', { month: 'short' });
+    if (!monthlyDataMap.has(monthLabel)) {
+      monthlyDataMap.set(monthLabel, { name: monthLabel.toUpperCase(), receitas: 0, despesas: 0 });
     }
-    const current = monthlyDataMap.get(month);
+    const current = monthlyDataMap.get(monthLabel);
     if (t.type === "INCOME") current.receitas += Number(t.amount);
     else current.despesas += Number(t.amount);
   });
 
   const monthlyChartData = Array.from(monthlyDataMap.values()).reverse();
 
-  // 5. Lógica de Investimentos
+  // 6. Lógica de Investimentos
   let currentPrice = 0;
   let stockLogo = "";
   if (asset) {
@@ -111,9 +139,14 @@ export default async function DashboardPage() {
             </div>
           </div>
           
-          <Link href="/dashboard/transaction" className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-bold shadow-md transition flex items-center gap-2">
-            + Nova Transação
-          </Link>
+          {/* Seletor de Mês e Botão de Transação */}
+          <div className="flex flex-col md:flex-row gap-4 items-center">
+            <MonthSelector />
+            
+            <Link href="/dashboard/transaction" className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-bold shadow-md transition flex items-center gap-2">
+              + Nova Transação
+            </Link>
+          </div>
         </div>
         
         {/* --- BLOCO 1: RESUMO FINANCEIRO --- */}
@@ -121,17 +154,18 @@ export default async function DashboardPage() {
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-blue-500">
             <p className="text-gray-500 text-sm font-semibold uppercase">Saldo Atual</p>
             <p className="text-3xl font-bold text-gray-800 mt-2">
+              {/* O saldo total da conta não muda com o filtro, é o acumulado histórico */}
               {account ? formatCurrency(Number(account.balance)) : formatCurrency(0)}
             </p>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-green-500">
-            <p className="text-gray-500 text-sm font-semibold uppercase">Entradas (Total)</p>
+            <p className="text-gray-500 text-sm font-semibold uppercase">Entradas ({month + 1}/{year})</p>
             <p className="text-3xl font-bold text-green-600 mt-2">
               {formatCurrency(totalIncome)}
             </p>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-red-500">
-            <p className="text-gray-500 text-sm font-semibold uppercase">Saídas (Total)</p>
+            <p className="text-gray-500 text-sm font-semibold uppercase">Saídas ({month + 1}/{year})</p>
             <p className="text-3xl font-bold text-red-600 mt-2">
               {formatCurrency(totalExpense)}
             </p>
@@ -145,7 +179,7 @@ export default async function DashboardPage() {
                 <MonthlyChart data={monthlyChartData} />
              ) : (
                 <div className="h-[300px] w-full bg-white p-4 rounded-xl shadow-sm flex items-center justify-center text-gray-400">
-                    Sem dados para o gráfico ainda.
+                    Sem movimentações neste mês.
                 </div>
              )}
           </div>
@@ -190,7 +224,7 @@ export default async function DashboardPage() {
 
         {/* --- BLOCO 3: LISTA DE TRANSAÇÕES --- */}
         <div className="bg-white p-6 rounded-xl shadow-sm">
-            <h3 className="font-bold text-gray-800 mb-6">Últimas Movimentações</h3>
+            <h3 className="font-bold text-gray-800 mb-6">Movimentações de {new Date(year, month).toLocaleString('pt-BR', { month: 'long' })}</h3>
             <div className="space-y-4">
             {account?.transactions.length ? (
               account.transactions.map((t) => (
@@ -234,7 +268,9 @@ export default async function DashboardPage() {
                   </div>
               ))
             ) : (
-              <p className="text-gray-400 text-center py-8">Você ainda não tem movimentações. Comece agora!</p>
+              <p className="text-gray-400 text-center py-8">
+                Nenhuma movimentação em {new Date(year, month).toLocaleString('pt-BR', { month: 'long' })}.
+              </p>
             )}
             </div>
         </div>
