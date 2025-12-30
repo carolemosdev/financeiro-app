@@ -43,16 +43,20 @@ export default async function DashboardPage({
   const startDate = new Date(year, month, 1);
   const endDate = new Date(year, month + 1, 0, 23, 59, 59);
 
-  // 3. BUSCA DADOS COM O FILTRO DE DATA APLICADO
-  const account = await prisma.account.findFirst({
-    where: { userId: userId },
-    include: { 
-      transactions: { 
-        where: {
-          date: { gte: startDate, lte: endDate }
-        },
-        orderBy: { date: 'desc' } 
-      } 
+  // 3. BUSCA ROBUSTA: Pega o usuário e TODAS as suas contas + transações do mês
+  const userWithData = await prisma.user.findUnique({
+    where: { id: userId },
+    include: {
+      accounts: {
+        include: {
+          transactions: {
+            where: {
+              date: { gte: startDate, lte: endDate }
+            },
+            orderBy: { date: 'desc' }
+          }
+        }
+      }
     }
   });
 
@@ -61,9 +65,18 @@ export default async function DashboardPage({
     include: { orders: true }
   });
 
-  // 4. Cálculos de Totais
-  const transactions = account?.transactions || [];
+  // 4. PROCESSAMENTO DE DADOS (Juntando todas as contas)
+  const allAccounts = userWithData?.accounts || [];
   
+  // Soma o saldo de todas as contas do usuário
+  const totalBalance = allAccounts.reduce((acc, account) => acc + Number(account.balance), 0);
+
+  // Junta as transações de todas as contas em uma única lista e ordena por data
+  const transactions = allAccounts
+    .flatMap(account => account.transactions)
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  
+  // Cálculos de Receitas e Despesas (Baseado na lista unificada)
   const totalIncome = transactions
     .filter(t => t.type === "INCOME")
     .reduce((acc, t) => acc + Number(t.amount), 0);
@@ -72,24 +85,18 @@ export default async function DashboardPage({
     .filter(t => t.type === "EXPENSE")
     .reduce((acc, t) => acc + Number(t.amount), 0);
 
-  // --- MUDANÇA AQUI ---
   // 5. Preparando dados para o Gráfico (VISÃO DIÁRIA 1-31)
-  
-  // Descobre quantos dias tem o mês selecionado
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   
-  // Cria array inicial zerado [Dia 1, Dia 2, ... Dia 30]
   const dailyChartData = Array.from({ length: daysInMonth }, (_, i) => ({
-    name: (i + 1).toString(), // Nome da barra: "1", "2"...
+    name: (i + 1).toString(),
     receitas: 0,
     despesas: 0
   }));
 
   transactions.forEach((t) => {
-    // getUTCDate garante o dia correto independente do fuso horário do servidor
     const day = new Date(t.date).getUTCDate();
     
-    // Se o dia estiver dentro do array (segurança)
     if (dailyChartData[day - 1]) {
       if (t.type === "INCOME") {
         dailyChartData[day - 1].receitas += Number(t.amount);
@@ -99,9 +106,7 @@ export default async function DashboardPage({
     }
   });
 
-  // Verifica se tem algum dado > 0 para decidir se mostra o gráfico
   const hasDataForChart = dailyChartData.some(d => d.receitas > 0 || d.despesas > 0);
-  // --- FIM DA MUDANÇA ---
 
   // 6. Lógica de Investimentos
   let currentPrice = 0;
@@ -156,9 +161,10 @@ export default async function DashboardPage({
         {/* --- BLOCO 1: RESUMO FINANCEIRO --- */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-blue-500">
-            <p className="text-gray-500 text-sm font-semibold uppercase">Saldo Atual</p>
+            <p className="text-gray-500 text-sm font-semibold uppercase">Saldo Atual (Total)</p>
             <p className="text-3xl font-bold text-gray-800 mt-2">
-              {account ? formatCurrency(Number(account.balance)) : formatCurrency(0)}
+              {/* Agora mostra o saldo somado de todas as contas */}
+              {formatCurrency(totalBalance)}
             </p>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-green-500">
@@ -175,7 +181,7 @@ export default async function DashboardPage({
           </div>
         </div>
 
-        {/* --- BLOCO 2: GRÁFICOS (AJUSTADO PARA DIÁRIO) --- */}
+        {/* --- BLOCO 2: GRÁFICOS --- */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <div className="lg:col-span-2">
              {hasDataForChart ? (
@@ -187,7 +193,6 @@ export default async function DashboardPage({
              )}
           </div>
           
-          {/* Coluna de Investimentos (Sem alterações) */}
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-full">
             <h2 className="text-gray-700 font-bold mb-4 border-b pb-2">Investimentos</h2>
             {asset ? (
@@ -230,8 +235,8 @@ export default async function DashboardPage({
         <div className="bg-white p-6 rounded-xl shadow-sm">
             <h3 className="font-bold text-gray-800 mb-6">Movimentações de {new Date(year, month).toLocaleString('pt-BR', { month: 'long' })}</h3>
             <div className="space-y-4">
-            {account?.transactions.length ? (
-              account.transactions.map((t) => (
+            {transactions.length ? (
+              transactions.map((t) => (
                   <div key={t.id} className="flex justify-between items-center group hover:bg-gray-50 p-3 rounded-lg transition border border-transparent hover:border-gray-100">
                       <div className="flex items-center gap-4">
                         <div className="w-12 h-12 bg-blue-50 text-2xl rounded-full flex items-center justify-center">
