@@ -9,18 +9,10 @@ import { formatCurrency } from "@/utils/formatters";
 import { deleteTransaction } from "./actions";
 import MonthSelector from "@/components/dashboard/MonthSelector";
 
-// Mapa de Ícones
 const CATEGORY_ICONS: Record<string, string> = {
-  "Alimentação": "🍔",
-  "Transporte": "🚗",
-  "Lazer": "🎉",
-  "Casa": "🏠",
-  "Saúde": "💊",
-  "Salário": "💰",
-  "Investimento": "📈",
-  "Outros": "📦",
-  "Geral": "📝",
-  "Ajuste": "🔧"
+  "Alimentação": "🍔", "Transporte": "🚗", "Lazer": "🎉", "Casa": "🏠",
+  "Saúde": "💊", "Salário": "💰", "Investimento": "📈", "Outros": "📦",
+  "Geral": "📝", "Ajuste": "🔧"
 };
 
 export default async function DashboardPage({
@@ -28,33 +20,21 @@ export default async function DashboardPage({
 }: {
   searchParams: { month?: string; year?: string };
 }) {
-  // 1. VERIFICAÇÃO DE SEGURANÇA
   const userId = await verifySession();
-  
-  if (!userId) {
-    redirect("/login");
-  }
+  if (!userId) redirect("/login");
 
-  // 2. LÓGICA DE DATA (FILTRO)
+  // 1. DATA SELECIONADA
   const now = new Date();
-  const month = searchParams.month ? Number(searchParams.month) : now.getMonth();
-  const year = searchParams.year ? Number(searchParams.year) : now.getFullYear();
+  const selectedMonth = searchParams.month ? Number(searchParams.month) : now.getMonth();
+  const selectedYear = searchParams.year ? Number(searchParams.year) : now.getFullYear();
 
-  const startDate = new Date(year, month, 1);
-  const endDate = new Date(year, month + 1, 0, 23, 59, 59);
-
-  // 3. BUSCA ROBUSTA: Pega o usuário e TODAS as suas contas + transações do mês
+  // 2. BUSCA TUDO (Removemos o filtro de data do banco para garantir que nada se perca)
   const userWithData = await prisma.user.findUnique({
     where: { id: userId },
     include: {
       accounts: {
         include: {
-          transactions: {
-            where: {
-              date: { gte: startDate, lte: endDate }
-            },
-            orderBy: { date: 'desc' }
-          }
+          transactions: { orderBy: { date: 'desc' } } // Traz todas as transações
         }
       }
     }
@@ -65,18 +45,20 @@ export default async function DashboardPage({
     include: { orders: true }
   });
 
-  // 4. PROCESSAMENTO DE DADOS (Juntando todas as contas)
+  // 3. PROCESSAMENTO E FILTRO NO JAVASCRIPT (Mais seguro contra Fuso Horário)
   const allAccounts = userWithData?.accounts || [];
-  
-  // Soma o saldo de todas as contas do usuário
   const totalBalance = allAccounts.reduce((acc, account) => acc + Number(account.balance), 0);
 
-  // Junta as transações de todas as contas em uma única lista e ordena por data
-  const transactions = allAccounts
-    .flatMap(account => account.transactions)
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  // Filtra as transações aqui no código
+  const allTransactions = allAccounts.flatMap(account => account.transactions);
   
-  // Cálculos de Receitas e Despesas (Baseado na lista unificada)
+  const transactions = allTransactions.filter(t => {
+    const tDate = new Date(t.date);
+    // Ajuste simples para garantir mês/ano correto independente do dia/hora
+    return tDate.getMonth() === selectedMonth && tDate.getFullYear() === selectedYear;
+  }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  // Totais
   const totalIncome = transactions
     .filter(t => t.type === "INCOME")
     .reduce((acc, t) => acc + Number(t.amount), 0);
@@ -85,9 +67,8 @@ export default async function DashboardPage({
     .filter(t => t.type === "EXPENSE")
     .reduce((acc, t) => acc + Number(t.amount), 0);
 
-  // 5. Preparando dados para o Gráfico (VISÃO DIÁRIA 1-31)
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  
+  // Gráfico Diário
+  const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
   const dailyChartData = Array.from({ length: daysInMonth }, (_, i) => ({
     name: (i + 1).toString(),
     receitas: 0,
@@ -95,20 +76,16 @@ export default async function DashboardPage({
   }));
 
   transactions.forEach((t) => {
-    const day = new Date(t.date).getUTCDate();
-    
+    const day = new Date(t.date).getUTCDate(); // Use UTC Date para alinhar
     if (dailyChartData[day - 1]) {
-      if (t.type === "INCOME") {
-        dailyChartData[day - 1].receitas += Number(t.amount);
-      } else {
-        dailyChartData[day - 1].despesas += Number(t.amount);
-      }
+      if (t.type === "INCOME") dailyChartData[day - 1].receitas += Number(t.amount);
+      else dailyChartData[day - 1].despesas += Number(t.amount);
     }
   });
 
   const hasDataForChart = dailyChartData.some(d => d.receitas > 0 || d.despesas > 0);
 
-  // 6. Lógica de Investimentos
+  // Investimentos
   let currentPrice = 0;
   let stockLogo = "";
   if (asset) {
@@ -122,66 +99,64 @@ export default async function DashboardPage({
   const chartData = asset ? [{
       name: asset.ticker,
       value: asset.orders.reduce((acc, order) => {
-        const priceToUse = currentPrice > 0 ? currentPrice : Number(order.price);
-        return acc + (priceToUse * Number(order.quantity));
+        const price = currentPrice > 0 ? currentPrice : Number(order.price);
+        return acc + (price * Number(order.quantity));
       }, 0)
   }] : [];
-
-  const totalInvested = asset ? asset.orders.reduce((acc, order) => acc + (Number(order.price) * Number(order.quantity)), 0) : 0;
+  
+  const totalInvested = asset ? asset.orders.reduce((acc, o) => acc + (Number(o.price) * Number(o.quantity)), 0) : 0;
   const currentTotalValue = chartData.length > 0 ? chartData[0].value : 0;
   const profit = currentTotalValue - totalInvested;
 
   return (
     <div className="min-h-screen bg-gray-100 p-8">
       <div className="max-w-6xl mx-auto">
-        
-        {/* Cabeçalho */}
         <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
           <div>
             <h1 className="text-3xl font-bold text-gray-800">Meu Painel Financeiro</h1>
             <div className="flex gap-4 mt-2 text-sm">
-                <Link href="/dashboard/cards" className="text-gray-500 hover:text-purple-600 flex items-center gap-1">
-                    💳 Meus Cartões
-                </Link>
-                <Link href="/dashboard/goals" className="text-gray-500 hover:text-blue-600 flex items-center gap-1">
-                    🎯 Meus Objetivos
-                </Link>
+                <Link href="/dashboard/cards" className="text-gray-500 hover:text-purple-600 flex items-center gap-1">💳 Meus Cartões</Link>
+                <Link href="/dashboard/goals" className="text-gray-500 hover:text-blue-600 flex items-center gap-1">🎯 Meus Objetivos</Link>
             </div>
           </div>
-          
           <div className="flex flex-col md:flex-row gap-4 items-center">
             <MonthSelector />
-            
             <Link href="/dashboard/transaction" className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-bold shadow-md transition flex items-center gap-2">
               + Nova Transação
             </Link>
           </div>
         </div>
-        
-        {/* --- BLOCO 1: RESUMO FINANCEIRO --- */}
+
+        {/* ALERTA DE DEBUG: Se não tiver contas, avisa o usuário */}
+        {allAccounts.length === 0 && (
+          <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-8">
+            <div className="flex">
+              <div className="ml-3">
+                <p className="text-sm text-yellow-700">
+                  <span className="font-bold">Atenção:</span> Você não tem nenhuma conta bancária cadastrada. 
+                  As transações precisam de uma conta para aparecer aqui.
+                  <Link href="/dashboard/cards" className="font-bold underline ml-1">Cadastre um cartão ou conta.</Link>
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-blue-500">
-            <p className="text-gray-500 text-sm font-semibold uppercase">Saldo Atual (Total)</p>
-            <p className="text-3xl font-bold text-gray-800 mt-2">
-              {/* Agora mostra o saldo somado de todas as contas */}
-              {formatCurrency(totalBalance)}
-            </p>
+            <p className="text-gray-500 text-sm font-semibold uppercase">Saldo Global</p>
+            <p className="text-3xl font-bold text-gray-800 mt-2">{formatCurrency(totalBalance)}</p>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-green-500">
-            <p className="text-gray-500 text-sm font-semibold uppercase">Entradas ({month + 1}/{year})</p>
-            <p className="text-3xl font-bold text-green-600 mt-2">
-              {formatCurrency(totalIncome)}
-            </p>
+            <p className="text-gray-500 text-sm font-semibold uppercase">Entradas ({selectedMonth + 1}/{selectedYear})</p>
+            <p className="text-3xl font-bold text-green-600 mt-2">{formatCurrency(totalIncome)}</p>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-red-500">
-            <p className="text-gray-500 text-sm font-semibold uppercase">Saídas ({month + 1}/{year})</p>
-            <p className="text-3xl font-bold text-red-600 mt-2">
-              {formatCurrency(totalExpense)}
-            </p>
+            <p className="text-gray-500 text-sm font-semibold uppercase">Saídas ({selectedMonth + 1}/{selectedYear})</p>
+            <p className="text-3xl font-bold text-red-600 mt-2">{formatCurrency(totalExpense)}</p>
           </div>
         </div>
 
-        {/* --- BLOCO 2: GRÁFICOS --- */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <div className="lg:col-span-2">
              {hasDataForChart ? (
@@ -192,7 +167,6 @@ export default async function DashboardPage({
                 </div>
              )}
           </div>
-          
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-full">
             <h2 className="text-gray-700 font-bold mb-4 border-b pb-2">Investimentos</h2>
             {asset ? (
@@ -204,44 +178,28 @@ export default async function DashboardPage({
                         <p className="text-sm text-gray-500">Cotação: {formatCurrency(currentPrice)}</p>
                     </div>
                  </div>
-                 
                  <div className="space-y-3">
-                    <div className="flex justify-between">
-                        <span className="text-gray-500">Total Investido</span>
-                        <span className="font-medium">{formatCurrency(totalInvested)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                        <span className="text-gray-500">Valor Atual</span>
-                        <span className="font-bold text-gray-800">{formatCurrency(currentTotalValue)}</span>
-                    </div>
+                    <div className="flex justify-between"><span className="text-gray-500">Total Investido</span><span className="font-medium">{formatCurrency(totalInvested)}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">Valor Atual</span><span className="font-bold text-gray-800">{formatCurrency(currentTotalValue)}</span></div>
                     <div className="pt-3 border-t flex justify-between items-center">
                         <span className="text-gray-500">Lucro/Prejuízo</span>
-                        <span className={`font-bold text-sm px-2 py-1 rounded ${profit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                            {profit >= 0 ? '+' : ''} {formatCurrency(profit)}
-                        </span>
+                        <span className={`font-bold text-sm px-2 py-1 rounded ${profit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{profit >= 0 ? '+' : ''} {formatCurrency(profit)}</span>
                     </div>
                  </div>
-                 <div className="mt-6 h-32">
-                    <PortfolioChart data={chartData} />
-                 </div>
+                 <div className="mt-6 h-32"><PortfolioChart data={chartData} /></div>
                </div>
-            ) : (
-              <p className="text-gray-400 mt-2 text-center py-10">Nenhum ativo cadastrado.</p>
-            )}
+            ) : (<p className="text-gray-400 mt-2 text-center py-10">Nenhum ativo cadastrado.</p>)}
           </div>
         </div>
 
-        {/* --- BLOCO 3: LISTA DE TRANSAÇÕES --- */}
         <div className="bg-white p-6 rounded-xl shadow-sm">
-            <h3 className="font-bold text-gray-800 mb-6">Movimentações de {new Date(year, month).toLocaleString('pt-BR', { month: 'long' })}</h3>
+            <h3 className="font-bold text-gray-800 mb-6">Movimentações de {new Date(selectedYear, selectedMonth).toLocaleString('pt-BR', { month: 'long' })}</h3>
             <div className="space-y-4">
             {transactions.length ? (
               transactions.map((t) => (
                   <div key={t.id} className="flex justify-between items-center group hover:bg-gray-50 p-3 rounded-lg transition border border-transparent hover:border-gray-100">
                       <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 bg-blue-50 text-2xl rounded-full flex items-center justify-center">
-                          {CATEGORY_ICONS[t.category] || "📝"}
-                        </div>
+                        <div className="w-12 h-12 bg-blue-50 text-2xl rounded-full flex items-center justify-center">{CATEGORY_ICONS[t.category] || "📝"}</div>
                         <div>
                           <p className="font-bold text-gray-800">{t.description}</p>
                           <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
@@ -251,39 +209,22 @@ export default async function DashboardPage({
                           </div>
                         </div>
                       </div>
-
                       <div className="flex items-center gap-6">
-                          <span className={`font-bold text-lg ${t.type === 'INCOME' ? 'text-green-600' : 'text-red-600'}`}>
-                            {t.type === 'INCOME' ? '+' : '-'} {formatCurrency(Number(t.amount))}
-                          </span>
-                          
+                          <span className={`font-bold text-lg ${t.type === 'INCOME' ? 'text-green-600' : 'text-red-600'}`}>{t.type === 'INCOME' ? '+' : '-'} {formatCurrency(Number(t.amount))}</span>
                           <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <Link 
-                                href={`/dashboard/transaction/${t.id}`}
-                                className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-blue-100 hover:text-blue-600 transition"
-                                title="Editar"
-                              >
-                                ✏️
-                              </Link>
-
                               <form action={deleteTransaction}>
                                   <input type="hidden" name="id" value={t.id} />
-                                  <button type="submit" className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-red-100 hover:text-red-600 transition" title="Excluir">
-                                      🗑️
-                                  </button>
+                                  <button type="submit" className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-red-100 hover:text-red-600 transition">🗑️</button>
                               </form>
                           </div>
                       </div>
                   </div>
               ))
             ) : (
-              <p className="text-gray-400 text-center py-8">
-                Nenhuma movimentação em {new Date(year, month).toLocaleString('pt-BR', { month: 'long' })}.
-              </p>
+              <p className="text-gray-400 text-center py-8">Nenhuma movimentação encontrada em {new Date(selectedYear, selectedMonth).toLocaleString('pt-BR', { month: 'long' })}.</p>
             )}
             </div>
         </div>
-
       </div>
     </div>
   );
